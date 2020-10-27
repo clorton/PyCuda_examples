@@ -1,3 +1,4 @@
+#! /usr/bin/env python3
 
 import timeit
 import random
@@ -11,8 +12,8 @@ import pycuda.autoinit
 import pycuda.compiler as compiler
 from pycuda.compiler import SourceModule
 
-NumberOfIndividuals = 10
-MAX_INDIVIDUALS = (1 << 5)
+NumberOfIndividuals = 65536
+MAX_INDIVIDUALS = (1 << 17)
 BLOCK_SIZE = 1024
 
 mod = """
@@ -22,6 +23,20 @@ mod = """
 
 extern "C" {
     #define NSTATES (1<<14)
+
+    __global__ void inspect(
+        unsigned int count,
+        float* age,
+        unsigned int* alive,
+        float* death_age)
+    {
+        int idx = threadIdx.x + blockIdx.x*blockDim.x;
+
+        if (idx >= count) return;
+
+        if (alive[idx]) printf("%d is alive at age %f (death at %f)\\n", idx, age[idx], death_age[idx]);
+        else            printf("%d is dead at age %f (death at %f)\\n", idx, age[idx], death_age[idx]);
+    }
     
     __global__ void update_individuals(
         unsigned int count,
@@ -32,19 +47,23 @@ extern "C" {
     {
         int idx = threadIdx.x + blockIdx.x*blockDim.x;
         
-        if(idx > count) return;
+        if (idx > count) return;
         
-        age[idx] += dt;
+        if ( alive[idx] ) {
+            age[idx] += dt;
         
-        if( age[idx] > death_age[idx] )
-        {
-            alive[idx] = 0;
+            if( age[idx] > death_age[idx] )
+            {
+                alive[idx] = 0;
+            }
         }
     }
-}"""
+}
+"""
 
 
 def load_cuda_code_individual():
+    global _inspect_fn
     global _update_individuals_fn
 
     md5 = hashlib.md5()
@@ -61,6 +80,7 @@ def load_cuda_code_individual():
 
     _cuda_module = cuda.module_from_file(str(path))
 
+    _inspect_fn = _cuda_module.get_function("inspect")
     _update_individuals_fn = _cuda_module.get_function("update_individuals")
 
 
@@ -140,9 +160,16 @@ if __name__ == '__main__':
     # for _ in range(duration):
     #     Individual.update_all_individuals(1.0)
 
+    for i, individual in enumerate(individuals[0:32]):
+        print(f"{i} is {'alive' if individual.is_alive else 'dead'} at age {individual.age} (death at {individual.death_age})")
+
+    _inspect_fn(numpy.uint32(32), Individual.Cuda_Arrays._age, Individual.Cuda_Arrays._alive, Individual.Cuda_Arrays._death_age, block=(256, 1, 1), grid=(1, 1))
+
     dt = 1/365
     result_time = timeit.timeit("[Individual.update_all_individuals(dt) for _ in range(duration)]", globals=globals(), number=NumberOfRuns)
     print("duration: ", result_time)
 
-    for i in individuals:
-        print("alive: ", i.is_alive)
+    for i, individual in enumerate(individuals[0:32]):
+        print(f"{i} is {'alive' if individual.is_alive else 'dead'} at age {individual.age} (death at {individual.death_age})")
+
+    _inspect_fn(numpy.uint32(32), Individual.Cuda_Arrays._age, Individual.Cuda_Arrays._alive, Individual.Cuda_Arrays._death_age, block=(256, 1, 1), grid=(1, 1))
